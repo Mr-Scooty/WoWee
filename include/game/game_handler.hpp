@@ -1452,6 +1452,11 @@ public:
     void lootTarget(uint64_t guid);
     void lootItem(uint8_t slotIndex);
     void closeLoot();
+    void scheduleGameObjectLootOpen(uint64_t guid, float delaySeconds = 0.35f, uint8_t attempts = 1);
+    void clearPendingGameObjectLootOpen(uint64_t guid);
+    bool hasPendingGameObjectLootOpen(uint64_t guid) const;
+    bool isGatherGameObject(uint64_t guid) const;
+    void despawnGameObjectLocally(uint64_t guid);
     void activateSpiritHealer(uint64_t npcGuid);
     bool isLootWindowOpen() const;
     const LootResponseData& getCurrentLoot() const;
@@ -3137,6 +3142,7 @@ private:
     struct PendingLootOpen {
         uint64_t guid = 0;
         float timer = 0.0f;
+        uint8_t remainingAttempts = 1;
     };
     std::vector<PendingLootOpen> pendingGameObjectLootOpens_;
     // Tracks the last GO we sent CMSG_GAMEOBJ_USE to; used in handleSpellGo

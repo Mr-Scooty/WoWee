@@ -1839,6 +1839,7 @@ public:
 class CastSpellPacket {
 public:
     static network::Packet build(uint32_t spellId, uint64_t targetGuid, uint8_t castCount);
+    static network::Packet buildGameObjectTarget(uint32_t spellId, uint64_t targetGuid, uint8_t castCount);
 };
 
 /** CMSG_CANCEL_AURA packet builder */
