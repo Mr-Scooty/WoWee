@@ -37,6 +37,34 @@ bool isBandageItem(const ItemQueryResponseData* info) {
            info->subClass == kConsumableSubclassBandage;
 }
 
+bool usesVisibleItemDisplayIds() {
+    return isActiveExpansion("tbc");
+}
+
+std::array<uint8_t, 19> inferredVisibleInventoryTypes() {
+    return {
+        InvType::HEAD,
+        InvType::NECK,
+        InvType::SHOULDERS,
+        InvType::SHIRT,
+        InvType::CHEST,
+        InvType::WAIST,
+        InvType::LEGS,
+        InvType::FEET,
+        InvType::WRISTS,
+        InvType::HANDS,
+        InvType::FINGER,
+        InvType::FINGER,
+        InvType::TRINKET,
+        InvType::TRINKET,
+        InvType::BACK,
+        InvType::MAIN_HAND,
+        InvType::SHIELD,
+        InvType::RANGED_BOW,
+        InvType::TABARD,
+    };
+}
+
 uint64_t targetGuidForUseItem(GameHandler& owner, const ItemQueryResponseData* info) {
     if (!info || !info->valid || info->itemClass != kItemClassConsumable) return 0;
     if (isBandageItem(info)) {
@@ -3103,6 +3131,21 @@ void InventoryHandler::rebuildOnlineInventory() {
 
 void InventoryHandler::maybeDetectVisibleItemLayout() {
     if (owner_.visibleItemLayoutVerifiedRef()) return;
+    if (usesVisibleItemDisplayIds()) {
+        owner_.visibleItemEntryBaseRef() = 272;
+        owner_.visibleItemStrideRef() = 4;
+        owner_.visibleItemLayoutVerifiedRef() = true;
+        LOG_INFO("Using TBC PLAYER_VISIBLE_ITEM display layout: base=",
+                 owner_.visibleItemEntryBaseRef(), " stride=",
+                 owner_.visibleItemStrideRef());
+
+        for (const auto& [guid, ent] : owner_.getEntityManager().getEntities()) {
+            if (!ent || ent->getType() != ObjectType::PLAYER) continue;
+            if (guid == owner_.getPlayerGuid()) continue;
+            updateOtherPlayerVisibleItems(guid, ent->getFields());
+        }
+        return;
+    }
     if (owner_.lastPlayerFieldsRef().empty()) return;
 
     std::array<uint32_t, 19> equipEntries{};
@@ -3191,8 +3234,18 @@ void InventoryHandler::updateOtherPlayerVisibleItems(uint64_t guid, const FlatFi
     // Use the current base/stride (defaults are correct for WotLK 3.3.5a: base=284, stride=2).
     // The heuristic may refine these later, but we proceed immediately with whatever values
     // are set rather than waiting for verification.
-    const int base = owner_.visibleItemEntryBaseRef();
-    const int stride = owner_.visibleItemStrideRef();
+    const bool valuesAreDisplayIds = usesVisibleItemDisplayIds();
+    int base = owner_.visibleItemEntryBaseRef();
+    int stride = owner_.visibleItemStrideRef();
+    if (valuesAreDisplayIds && !owner_.visibleItemLayoutVerifiedRef()) {
+        base = 272;
+        stride = 4;
+        owner_.visibleItemEntryBaseRef() = base;
+        owner_.visibleItemStrideRef() = stride;
+        owner_.visibleItemLayoutVerifiedRef() = true;
+        LOG_INFO("Using TBC PLAYER_VISIBLE_ITEM display layout: base=", base,
+                 " stride=", stride);
+    }
     if (base < 0 || stride <= 0) return; // Defensive: should never happen with defaults.
 
     std::array<uint32_t, 19> newEntries{};
@@ -3223,6 +3276,7 @@ void InventoryHandler::updateOtherPlayerVisibleItems(uint64_t guid, const FlatFi
     if (nonZero > 0) {
         LOG_DEBUG("updateOtherPlayerVisibleItems: guid=0x", std::hex, guid, std::dec,
                  " nonZero=", nonZero, " base=", base, " stride=", stride,
+                 " values=", (valuesAreDisplayIds ? "displayIds" : "itemEntries"),
                  " head=", newEntries[0], " shoulders=", newEntries[2],
                  " chest=", newEntries[4], " legs=", newEntries[6],
                  " mainhand=", newEntries[15], " offhand=", newEntries[16]);
@@ -3233,6 +3287,14 @@ void InventoryHandler::updateOtherPlayerVisibleItems(uint64_t guid, const FlatFi
     if (old != newEntries) {
         old = newEntries;
         changed = true;
+    }
+
+    if (valuesAreDisplayIds) {
+        if (changed) {
+            owner_.otherPlayerVisibleDirtyRef().insert(guid);
+            emitOtherPlayerEquipment(guid);
+        }
+        return;
     }
 
     // Request item templates for any new visible entries.
@@ -3261,6 +3323,43 @@ void InventoryHandler::updateOtherPlayerVisibleItems(uint64_t guid, const FlatFi
     }
 }
 
+void InventoryHandler::cacheInspectedPlayerEquipment(uint64_t guid, const std::array<uint32_t, 19>& itemEntries) {
+    if (guid == 0) return;
+
+    owner_.inspectedPlayerItemEntriesRef()[guid] = itemEntries;
+
+    std::array<uint32_t, 19> displayIds{};
+    std::array<uint8_t, 19> invTypes{};
+    int entries = 0;
+    int resolved = 0;
+
+    for (int s = 0; s < 19; ++s) {
+        const uint32_t entry = itemEntries[s];
+        if (entry == 0) continue;
+        entries++;
+
+        auto infoIt = owner_.itemInfoCacheRef().find(entry);
+        if (infoIt != owner_.itemInfoCacheRef().end()) {
+            displayIds[s] = infoIt->second.displayInfoId;
+            invTypes[s] = static_cast<uint8_t>(infoIt->second.inventoryType);
+            resolved++;
+            continue;
+        }
+
+        queryItemInfo(entry, 0);
+    }
+
+    LOG_DEBUG("cacheInspectedPlayerEquipment: guid=0x", std::hex, guid, std::dec,
+              " entries=", entries, " resolved=", resolved,
+              " head=", displayIds[0], " shoulders=", displayIds[2],
+              " chest=", displayIds[4], " legs=", displayIds[6],
+              " mainhand=", displayIds[15], " offhand=", displayIds[16]);
+
+    if (resolved > 0 && owner_.playerEquipmentCallbackRef()) {
+        owner_.playerEquipmentCallbackRef()(guid, displayIds, invTypes);
+    }
+}
+
 void InventoryHandler::emitOtherPlayerEquipment(uint64_t guid) {
     if (!owner_.playerEquipmentCallbackRef()) return;
     auto it = owner_.otherPlayerVisibleItemEntriesRef().find(guid);
@@ -3268,6 +3367,26 @@ void InventoryHandler::emitOtherPlayerEquipment(uint64_t guid) {
 
     std::array<uint32_t, 19> displayIds{};
     std::array<uint8_t, 19> invTypes{};
+    if (usesVisibleItemDisplayIds()) {
+        displayIds = it->second;
+        invTypes = inferredVisibleInventoryTypes();
+        int nonZeroDisplay = 0;
+        for (uint32_t displayId : displayIds) {
+            if (displayId != 0) nonZeroDisplay++;
+        }
+
+        LOG_DEBUG("emitOtherPlayerEquipment: guid=0x", std::hex, guid, std::dec,
+                 " TBC displayIds=", nonZeroDisplay,
+                 " head=", displayIds[0], " shoulders=", displayIds[2],
+                 " chest=", displayIds[4], " legs=", displayIds[6],
+                 " mainhand=", displayIds[15], " offhand=", displayIds[16]);
+
+        if (nonZeroDisplay == 0) return;
+        owner_.playerEquipmentCallbackRef()(guid, displayIds, invTypes);
+        owner_.otherPlayerVisibleDirtyRef().erase(guid);
+        return;
+    }
+
     bool anyEntry = false;
     int resolved = 0, unresolved = 0;
 

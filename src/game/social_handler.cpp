@@ -79,6 +79,42 @@ static const char* lfgTeleportDeniedString(uint8_t reason) {
     }
 }
 
+static bool parseInspectEquipmentPayload(network::Packet& packet,
+                                         uint64_t& outGuid,
+                                         std::array<uint32_t, 19>& outItems) {
+    const size_t start = packet.getReadPos();
+    constexpr size_t kGearBytes = 19 * sizeof(uint32_t);
+
+    auto readItems = [&]() -> bool {
+        for (uint32_t& item : outItems) {
+            if (!packet.hasRemaining(sizeof(uint32_t))) return false;
+            item = packet.readUInt32();
+        }
+        return true;
+    };
+
+    if (packet.getRemainingSize() == sizeof(uint64_t) + kGearBytes) {
+        outGuid = packet.readUInt64();
+        if (outGuid != 0 && readItems()) {
+            return true;
+        }
+        packet.setReadPos(start);
+        outItems.fill(0);
+    }
+
+    if (packet.hasFullPackedGuid()) {
+        outGuid = packet.readPackedGuid();
+        if (outGuid != 0 && packet.getRemainingSize() == kGearBytes && readItems()) {
+            return true;
+        }
+    }
+
+    packet.setReadPos(start);
+    outGuid = 0;
+    outItems.fill(0);
+    return false;
+}
+
 static const std::string kEmptyString;
 
 SocialHandler::SocialHandler(GameHandler& owner)
@@ -642,6 +678,31 @@ void SocialHandler::inspectTarget() {
 }
 
 void SocialHandler::handleInspectResults(network::Packet& packet) {
+    if (isActiveExpansion("tbc") && packet.getOpcode() == wireOpcode(Opcode::SMSG_INSPECT_RESULTS_UPDATE)) {
+        uint64_t guid = 0;
+        std::array<uint32_t, 19> items{};
+        if (parseInspectEquipmentPayload(packet, guid, items)) {
+            owner_.cacheInspectedPlayerEquipment(guid, items);
+
+            auto entity = owner_.getEntityManager().getEntity(guid);
+            std::string playerName = "Target";
+            if (entity) {
+                auto player = std::dynamic_pointer_cast<Player>(entity);
+                if (player && !player->getName().empty()) playerName = player->getName();
+            }
+
+            LOG_INFO("SMSG_INSPECT_RESULTS_UPDATE (TBC gear): ", playerName, " has gear in ",
+                     std::count_if(items.begin(), items.end(),
+                                   [](uint32_t e) { return e != 0; }), "/19 slots");
+            if (owner_.addonEventCallbackRef()) {
+                char guidBuf[32];
+                snprintf(guidBuf, sizeof(guidBuf), "0x%016llX", (unsigned long long)guid);
+                owner_.addonEventCallbackRef()("INSPECT_READY", {guidBuf});
+            }
+            return;
+        }
+    }
+
     if (!packet.hasRemaining(1)) return;
     uint8_t talentType = packet.readUInt8();
 
