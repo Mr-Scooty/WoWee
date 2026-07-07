@@ -1298,6 +1298,10 @@ void GameHandler::inspectTarget() {
     if (socialHandler_) socialHandler_->inspectTarget();
 }
 
+const GameHandler::InspectResult* GameHandler::getInspectResult() const {
+    return socialHandler_ ? socialHandler_->getInspectResult() : nullptr;
+}
+
 void GameHandler::queryServerTime() {
     if (socialHandler_) socialHandler_->queryServerTime();
 }

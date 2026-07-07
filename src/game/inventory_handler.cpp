@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <sstream>
 
 namespace wowee {
@@ -38,7 +39,31 @@ bool isBandageItem(const ItemQueryResponseData* info) {
 }
 
 bool usesVisibleItemDisplayIds() {
-    return isActiveExpansion("tbc");
+    return false;
+}
+
+constexpr int kTbcVisibleItemStride = 16;
+
+int tbcVisibleItemBaseFallback() {
+    const uint16_t invSlotHead = fieldIndex(UF::PLAYER_FIELD_INV_SLOT_HEAD);
+    constexpr int kVisibleSlots = 19;
+    const int visibleBytes = kVisibleSlots * kTbcVisibleItemStride;
+    if (invSlotHead != 0xFFFF && invSlotHead >= visibleBytes) {
+        return static_cast<int>(invSlotHead) - visibleBytes;
+    }
+    return 346;
+}
+
+bool visibleEquipmentFieldDiagEnabled() {
+    static const bool enabled = [] {
+        const char* raw = std::getenv("WOWEE_VISIBLE_EQUIP_FIELD_DIAG");
+        if (!raw || raw[0] == '\0') return false;
+        std::string value(raw);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value != "0" && value != "false" && value != "off";
+    }();
+    return enabled;
 }
 
 std::array<uint8_t, 19> inferredVisibleInventoryTypes() {
@@ -3132,21 +3157,112 @@ void InventoryHandler::rebuildOnlineInventory() {
 void InventoryHandler::maybeDetectVisibleItemLayout() {
     if (owner_.visibleItemLayoutVerifiedRef()) return;
     if (usesVisibleItemDisplayIds()) {
-        owner_.visibleItemEntryBaseRef() = 272;
-        owner_.visibleItemStrideRef() = 4;
-        owner_.visibleItemLayoutVerifiedRef() = true;
-        LOG_INFO("Using TBC PLAYER_VISIBLE_ITEM display layout: base=",
-                 owner_.visibleItemEntryBaseRef(), " stride=",
-                 owner_.visibleItemStrideRef());
+        std::array<uint32_t, 19> equipDisplayIds = owner_.lastEquipDisplayIdsRef();
+        int nonZero = 0;
+        for (int i = 0; i < 19; ++i) {
+            if (equipDisplayIds[i] == 0) {
+                const auto& slot = owner_.inventoryRef().getEquipSlot(static_cast<EquipSlot>(i));
+                if (!slot.empty()) equipDisplayIds[i] = slot.item.displayInfoId;
+            }
+            if (equipDisplayIds[i] != 0) nonZero++;
+        }
 
-        for (const auto& [guid, ent] : owner_.getEntityManager().getEntities()) {
-            if (!ent || ent->getType() != ObjectType::PLAYER) continue;
-            if (guid == owner_.getPlayerGuid()) continue;
-            updateOtherPlayerVisibleItems(guid, ent->getFields());
+        int bestBase = -1;
+        int bestStride = 0;
+        int bestMatches = 0;
+        int bestMismatches = 9999;
+        int bestScore = -999999;
+
+        if (nonZero >= 2 && !owner_.lastPlayerFieldsRef().empty()) {
+            const uint16_t maxKey = owner_.lastPlayerFieldsRef().back().first;
+            const int strides[] = {16, 12, 8, 4, 2, 3, 1};
+            for (int stride : strides) {
+                for (const auto& [baseIdxU16, _v] : owner_.lastPlayerFieldsRef()) {
+                    const int base = static_cast<int>(baseIdxU16);
+                    if (base + 18 * stride > static_cast<int>(maxKey)) continue;
+
+                    int matches = 0;
+                    int mismatches = 0;
+                    for (int s = 0; s < 19; ++s) {
+                        uint32_t want = equipDisplayIds[s];
+                        if (want == 0) continue;
+                        const uint16_t idx = static_cast<uint16_t>(base + s * stride);
+                        auto it = owner_.lastPlayerFieldsRef().find(idx);
+                        if (it == owner_.lastPlayerFieldsRef().end()) continue;
+                        if (it->second == want) {
+                            matches++;
+                        } else if (it->second != 0) {
+                            mismatches++;
+                        }
+                    }
+
+                    int score = matches * 3 - mismatches * 2;
+                    if (score > bestScore ||
+                        (score == bestScore && matches > bestMatches) ||
+                        (score == bestScore && matches == bestMatches && mismatches < bestMismatches) ||
+                        (score == bestScore && matches == bestMatches && mismatches == bestMismatches &&
+                         (bestBase < 0 || base < bestBase))) {
+                        bestScore = score;
+                        bestMatches = matches;
+                        bestMismatches = mismatches;
+                        bestBase = base;
+                        bestStride = stride;
+                    }
+                }
+            }
+        }
+
+        bool changed = false;
+        if (bestMatches >= 2 && bestBase >= 0 && bestStride > 0 && bestMismatches <= 2) {
+            changed = owner_.visibleItemEntryBaseRef() != bestBase ||
+                      owner_.visibleItemStrideRef() != bestStride;
+            owner_.visibleItemEntryBaseRef() = bestBase;
+            owner_.visibleItemStrideRef() = bestStride;
+            owner_.visibleItemLayoutVerifiedRef() = true;
+            LOG_INFO("Detected TBC PLAYER_VISIBLE_ITEM display layout: base=", bestBase,
+                     " stride=", bestStride, " (matches=", bestMatches,
+                     " mismatches=", bestMismatches, " score=", bestScore, ")");
+        } else {
+            // TBC exposes display IDs rather than item entries, but private cores
+            // are not perfectly consistent about the base offset. Keep the known
+            // 2.4.x fallback active without marking it verified, so later local
+            // equipment updates can still detect a better layout.
+            const int kTbcFallbackBase = tbcVisibleItemBaseFallback();
+            constexpr int kTbcFallbackStride = kTbcVisibleItemStride;
+            changed = owner_.visibleItemEntryBaseRef() != kTbcFallbackBase ||
+                      owner_.visibleItemStrideRef() != kTbcFallbackStride;
+            owner_.visibleItemEntryBaseRef() = kTbcFallbackBase;
+            owner_.visibleItemStrideRef() = kTbcFallbackStride;
+            static bool loggedProvisionalLayout = false;
+            if (!loggedProvisionalLayout) {
+                loggedProvisionalLayout = true;
+                LOG_INFO("Using provisional TBC PLAYER_VISIBLE_ITEM display layout: base=",
+                         kTbcFallbackBase, " stride=", kTbcFallbackStride,
+                         " (waiting for local display-ID confirmation)");
+            }
+            if (visibleEquipmentFieldDiagEnabled()) {
+                LOG_INFO("TBC visible layout detection pending: localDisplayIds=", nonZero,
+                         " bestBase=", bestBase, " bestStride=", bestStride,
+                         " matches=", bestMatches, " mismatches=", bestMismatches,
+                         " score=", bestScore);
+            }
+        }
+
+        if (changed || owner_.visibleItemLayoutVerifiedRef()) {
+            for (const auto& [guid, ent] : owner_.getEntityManager().getEntities()) {
+                if (!ent || ent->getType() != ObjectType::PLAYER) continue;
+                if (guid == owner_.getPlayerGuid()) continue;
+                updateOtherPlayerVisibleItems(guid, ent->getFields());
+            }
         }
         return;
     }
     if (owner_.lastPlayerFieldsRef().empty()) return;
+
+    if (isActiveExpansion("tbc")) {
+        owner_.visibleItemEntryBaseRef() = tbcVisibleItemBaseFallback();
+        owner_.visibleItemStrideRef() = kTbcVisibleItemStride;
+    }
 
     std::array<uint32_t, 19> equipEntries{};
     int nonZero = 0;
@@ -3175,7 +3291,9 @@ void InventoryHandler::maybeDetectVisibleItemLayout() {
     int bestMismatches = 9999;
     int bestScore = -999999;
 
-    const int strides[] = {2, 3, 4, 1};
+    const std::array<int, 5> strides = isActiveExpansion("tbc")
+        ? std::array<int, 5>{16, 2, 3, 4, 1}
+        : std::array<int, 5>{2, 3, 4, 1, 16};
     for (int stride : strides) {
         for (const auto& [baseIdxU16, _v] : owner_.lastPlayerFieldsRef()) {
             const int base = static_cast<int>(baseIdxU16);
@@ -3237,14 +3355,15 @@ void InventoryHandler::updateOtherPlayerVisibleItems(uint64_t guid, const FlatFi
     const bool valuesAreDisplayIds = usesVisibleItemDisplayIds();
     int base = owner_.visibleItemEntryBaseRef();
     int stride = owner_.visibleItemStrideRef();
-    if (valuesAreDisplayIds && !owner_.visibleItemLayoutVerifiedRef()) {
-        base = 272;
-        stride = 4;
-        owner_.visibleItemEntryBaseRef() = base;
-        owner_.visibleItemStrideRef() = stride;
-        owner_.visibleItemLayoutVerifiedRef() = true;
-        LOG_INFO("Using TBC PLAYER_VISIBLE_ITEM display layout: base=", base,
-                 " stride=", stride);
+    if (isActiveExpansion("tbc") && !owner_.visibleItemLayoutVerifiedRef()) {
+        const int kTbcFallbackBase = tbcVisibleItemBaseFallback();
+        constexpr int kTbcFallbackStride = kTbcVisibleItemStride;
+        if (base != kTbcFallbackBase || stride != kTbcFallbackStride) {
+            base = kTbcFallbackBase;
+            stride = kTbcFallbackStride;
+            owner_.visibleItemEntryBaseRef() = base;
+            owner_.visibleItemStrideRef() = stride;
+        }
     }
     if (base < 0 || stride <= 0) return; // Defensive: should never happen with defaults.
 
@@ -3284,6 +3403,27 @@ void InventoryHandler::updateOtherPlayerVisibleItems(uint64_t guid, const FlatFi
             }
         }
         LOG_DEBUG("RAW FIELDS 270-340:", dump);
+    }
+    static int diagDumpCount = 0;
+    if (visibleEquipmentFieldDiagEnabled() && diagDumpCount < 8 && fields.size() > 20) {
+        diagDumpCount++;
+        std::ostringstream dump;
+        int emitted = 0;
+        uint16_t maxField = 0;
+        for (const auto& [idx, val] : fields) {
+            if (idx > maxField) maxField = idx;
+            if (idx < 220 || idx > 760 || val == 0) continue;
+            dump << " [" << idx << "]=" << val;
+            if (++emitted >= 180) {
+                dump << " ...";
+                break;
+            }
+        }
+        LOG_INFO("VISIBLE EQUIP FIELD DIAG guid=0x", std::hex, guid, std::dec,
+                 " fieldCount=", fields.size(), " maxField=", maxField,
+                 " base=", base, " stride=", stride,
+                 " verified=", owner_.visibleItemLayoutVerifiedRef(),
+                 " nonZero[220-760]=", dump.str());
     }
 
     if (nonZero > 0) {
