@@ -326,7 +326,11 @@ void EntitySpawner::spawnOnlinePlayer(uint64_t guid,
     activeGeosets.insert(kGeosetBareFeet);
     charRenderer->setActiveGeosets(instanceId, activeGeosets);
 
-    charRenderer->playAnimation(instanceId, rendering::anim::STAND, true);
+    if (deadCreatureGuids_.count(guid)) {
+        charRenderer->playAnimation(instanceId, rendering::anim::DEATH, false);
+    } else {
+        charRenderer->playAnimation(instanceId, rendering::anim::STAND, true);
+    }
     playerInstances_[guid] = instanceId;
 
     OnlinePlayerAppearanceState st;
@@ -940,6 +944,7 @@ void EntitySpawner::despawnPlayer(uint64_t guid) {
     playerInstances_.erase(it);
     onlinePlayerAppearance_.erase(guid);
     pendingOnlinePlayerEquipment_.erase(guid);
+    deadCreatureGuids_.erase(guid);
     creatureRenderPosCache_.erase(guid);
     creatureSwimmingState_.erase(guid);
     creatureWalkingState_.erase(guid);
