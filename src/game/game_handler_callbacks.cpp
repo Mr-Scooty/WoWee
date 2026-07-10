@@ -568,6 +568,7 @@ void GameHandler::selectCharacter(uint64_t characterGuid) {
     playerDead_ = false;
     releasedSpirit_ = false;
     corpseGuid_ = 0;
+    corpsePositionValid_ = false;
     corpseReclaimAvailableMs_ = 0;
     targetGuid = 0;
     focusGuid = 0;
