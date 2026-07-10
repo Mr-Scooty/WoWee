@@ -92,6 +92,16 @@ bool containsAnyTerm(const std::string& haystack, const char* const* terms, size
     return false;
 }
 
+bool isLootContainerName(const std::string& name) {
+    const std::string lower = lowerCopy(name);
+    static constexpr const char* kContainerTerms[] = {
+        "chest", "lockbox", "strongbox", "coffer", "cache", "bundle",
+        "sack", "bag", "crate", "barrel", "basket", "oats"
+    };
+    return containsAnyTerm(lower, kContainerTerms,
+                           sizeof(kContainerTerms) / sizeof(kContainerTerms[0]));
+}
+
 uint32_t gatherSpellForGameObject(const GameObjectQueryResponseData* info, const std::string& name) {
     if (info && info->type != 3) return 0; // GAMEOBJECT_TYPE_CHEST
 
@@ -2194,13 +2204,10 @@ void GameHandler::performGameObjectInteractionNow(uint64_t guid) {
         }
     }
     if (!chestLike && !goName.empty()) {
-        std::string lower = lowerCopy(goName);
-        chestLike = (lower.find("chest") != std::string::npos ||
-                     lower.find("lockbox") != std::string::npos ||
-                     lower.find("strongbox") != std::string::npos ||
-                     lower.find("coffer") != std::string::npos ||
-                     lower.find("cache") != std::string::npos ||
-                     lower.find("bundle") != std::string::npos);
+        // Query metadata can arrive after the player clicks. Recognize common
+        // quest-loot containers by name so objects such as Sack of Oats still
+        // receive the delayed CMSG_LOOT sequence used by type-3 chests.
+        chestLike = isLootContainerName(goName);
     }
 
     LOG_INFO("GO interaction: guid=0x", std::hex, guid, std::dec,
