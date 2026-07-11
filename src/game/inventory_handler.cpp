@@ -2162,6 +2162,7 @@ void InventoryHandler::handleAuctionListResult(network::Packet& packet) {
     auto ensureEntries = [this](const AuctionListResult& r) {
         for (const auto& e : r.auctions) {
             owner_.ensureItemInfo(e.itemEntry);
+            if (e.ownerGuid != 0) owner_.queryPlayerName(e.ownerGuid);
         }
     };
     if (pendingAuctionTarget_ == AuctionResultTarget::OWNER) ensureEntries(auctionOwnerResults_);

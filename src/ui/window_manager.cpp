@@ -3054,7 +3054,7 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
     if (!gameHandler.isAuctionHouseOpen()) return;
 
     bool open = true;
-    ImGui::SetNextWindowSize(ImVec2(650, 500), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(900, 600), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Auction House", &open)) {
         ImGui::End();
         if (!open) gameHandler.closeAuctionHouse();
@@ -3146,10 +3146,51 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
                 auctionUsableOnly_ ? 1 : 0, offset);
         };
 
+        // Original-style browse hierarchy: categories remain visible on the
+        // left while search controls and results occupy the right pane.
+        if (ImGui::BeginChild("AuctionCategories", ImVec2(185.0f, -1.0f), true)) {
+            ImGui::TextUnformatted("Categories");
+            ImGui::Separator();
+
+            for (int c = 0; c < NUM_CLASSES; ++c) {
+                bool selected = (auctionItemClass_ == c) ||
+                                (c == 0 && auctionItemClass_ < 0);
+                if (ImGui::Selectable(classMappings[c].label, selected)) {
+                    auctionItemClass_ = c;
+                    auctionItemSubClass_ = -1;
+                    auctionBrowseOffset_ = 0;
+                }
+
+                uint32_t classId = classMappings[c].classId;
+                if (selected && (classId == 2 || classId == 4)) {
+                    const AHSubMapping* subs = (classId == 2) ? weaponSubs : armorSubs;
+                    int numSubs = (classId == 2) ? NUM_WEAPON_SUBS : NUM_ARMOR_SUBS;
+                    ImGui::Indent(14.0f);
+                    for (int s = 0; s < numSubs; ++s) {
+                        // Subclass index 0 is the visible "All" row; the stored
+                        // value uses -1 for that wire-level wildcard.
+                        int storedSub = s - 1;
+                        bool subSelected = auctionItemSubClass_ == storedSub;
+                        ImGui::PushID(c * 100 + s);
+                        if (ImGui::Selectable(subs[s].label, subSelected)) {
+                            auctionItemSubClass_ = storedSub;
+                            auctionBrowseOffset_ = 0;
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::Unindent(14.0f);
+                }
+            }
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("AuctionBrowsePane", ImVec2(0.0f, -1.0f), false);
+
         // Row 1: Name + Level range
-        ImGui::SetNextItemWidth(200);
-        bool enterPressed = ImGui::InputText("Name", auctionSearchName_, sizeof(auctionSearchName_),
-                                              ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SetNextItemWidth(240);
+        bool enterPressed = ImGui::InputTextWithHint(
+            "##AuctionItemName", "Item name (optional)", auctionSearchName_,
+            sizeof(auctionSearchName_), ImGuiInputTextFlags_EnterReturnsTrue);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(50);
         ImGui::InputInt("Min Lv", &auctionLevelMin_, 0);
@@ -3157,37 +3198,10 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
         ImGui::SetNextItemWidth(50);
         ImGui::InputInt("Max Lv", &auctionLevelMax_, 0);
 
-        // Row 2: Quality + Category + Subcategory + Search button
+        // Row 2: quality and usability refine the category selected at left.
         const char* qualities[] = {"All", "Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary"};
         ImGui::SetNextItemWidth(100);
         ImGui::Combo("Quality", &auctionQuality_, qualities, 7);
-
-        ImGui::SameLine();
-        // Build class label list from mappings
-        const char* classLabels[NUM_CLASSES];
-        for (int c = 0; c < NUM_CLASSES; c++) classLabels[c] = classMappings[c].label;
-        ImGui::SetNextItemWidth(120);
-        int classIdx = auctionItemClass_ < 0 ? 0 : auctionItemClass_;
-        if (ImGui::Combo("Category", &classIdx, classLabels, NUM_CLASSES)) {
-            if (classIdx != auctionItemClass_) auctionItemSubClass_ = -1;
-            auctionItemClass_ = classIdx;
-        }
-
-        // Subcategory (only for Weapon and Armor)
-        uint32_t curClassId = getSearchClassId();
-        if (curClassId == 2 || curClassId == 4) {
-            const AHSubMapping* subs = (curClassId == 2) ? weaponSubs : armorSubs;
-            int numSubs = (curClassId == 2) ? NUM_WEAPON_SUBS : NUM_ARMOR_SUBS;
-            const char* subLabels[20];
-            for (int s = 0; s < numSubs && s < 20; s++) subLabels[s] = subs[s].label;
-            int subIdx = auctionItemSubClass_ + 1;  // -1 → 0 ("All")
-            if (subIdx < 0 || subIdx >= numSubs) subIdx = 0;
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(110);
-            if (ImGui::Combo("Subcat", &subIdx, subLabels, numSubs)) {
-                auctionItemSubClass_ = subIdx - 1;  // 0 → -1 ("All")
-            }
-        }
 
         ImGui::SameLine();
         ImGui::Checkbox("Usable", &auctionUsableOnly_);
@@ -3200,7 +3214,8 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
             ImGui::Button(delayBuf);
             ImGui::EndDisabled();
         } else {
-            if (ImGui::Button("Search") || enterPressed) {
+            const char* searchLabel = auctionSearchName_[0] == '\0' ? "Browse" : "Search";
+            if (ImGui::Button(searchLabel) || enterPressed) {
                 doSearch(0);
             }
         }
@@ -3237,9 +3252,10 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
         }
 
         if (ImGui::BeginChild("AuctionResults", ImVec2(0, -110), true)) {
-            if (ImGui::BeginTable("AuctionTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+            if (ImGui::BeginTable("AuctionTable", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
                 ImGui::TableSetupColumn("Item", ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableSetupColumn("Qty", ImGuiTableColumnFlags_WidthFixed, 40);
+                ImGui::TableSetupColumn("Seller", ImGuiTableColumnFlags_WidthFixed, 95);
                 ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 60);
                 ImGui::TableSetupColumn("Bid", ImGuiTableColumnFlags_WidthFixed, 90);
                 ImGui::TableSetupColumn("Buyout", ImGuiTableColumnFlags_WidthFixed, 90);
@@ -3284,26 +3300,37 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
                     ImGui::Text("%u", auction.stackCount);
 
                     ImGui::TableSetColumnIndex(2);
+                    if (auction.ownerGuid == gameHandler.getPlayerGuid()) {
+                        ImGui::TextUnformatted("You");
+                    } else {
+                        std::string seller = gameHandler.getCachedPlayerName(auction.ownerGuid);
+                        if (!seller.empty())
+                            ImGui::TextUnformatted(seller.c_str());
+                        else
+                            ImGui::TextDisabled("Loading...");
+                    }
+
+                    ImGui::TableSetColumnIndex(3);
                     // Time left display
                     uint32_t mins = auction.timeLeftMs / 60000;
                     if (mins > 720) ImGui::Text("Long");
                     else if (mins > 120) ImGui::Text("Medium");
                     else ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Short");
 
-                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TableSetColumnIndex(4);
                     {
                         uint32_t bid = auction.currentBid > 0 ? auction.currentBid : auction.startBid;
                         renderCoinsFromCopper(bid);
                     }
 
-                    ImGui::TableSetColumnIndex(4);
+                    ImGui::TableSetColumnIndex(5);
                     if (auction.buyoutPrice > 0) {
                         renderCoinsFromCopper(auction.buyoutPrice);
                     } else {
                         ImGui::TextDisabled("--");
                     }
 
-                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TableSetColumnIndex(6);
                     ImGui::PushID(static_cast<int>(i) + 7000);
                     if (auction.buyoutPrice > 0 && ImGui::SmallButton("Buy")) {
                         gameHandler.auctionBuyout(auction.auctionId, auction.buyoutPrice);
@@ -3419,6 +3446,8 @@ void WindowManager::renderAuctionHouseWindow(game::GameHandler& gameHandler,
             auctionSellBuyout_[0] = auctionSellBuyout_[1] = auctionSellBuyout_[2] = 0;
         }
         if (!canCreate) ImGui::EndDisabled();
+
+        ImGui::EndChild(); // AuctionBrowsePane
 
     } else if (tab == 1) {
         // Bids tab
