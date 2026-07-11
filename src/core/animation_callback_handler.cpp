@@ -390,14 +390,22 @@ void AnimationCallbackHandler::setupCallbacks() {
             };
 
             bool isBandage = false;
+            bool isGathering = false;
             if (isLocalPlayer && currentSpell != 0) {
                 gameHandler_.loadSpellNameCache();
                 auto it = gameHandler_.spellNameCacheRef().find(currentSpell);
                 isBandage = (it != gameHandler_.spellNameCacheRef().end() &&
                              it->second.name.find("Bandage") != std::string::npos);
+                if (!isBandage && !isFishing) {
+                    isGathering = gameHandler_.isProfessionSpell(currentSpell);
+                    if (!isGathering && it != gameHandler_.spellNameCacheRef().end()) {
+                        const auto& nm = it->second.name;
+                        isGathering = (nm == "Opening" || nm == "Open Lock");
+                    }
+                }
             }
 
-            if (isBandage) {
+            if (isBandage || isGathering) {
                 uint32_t useStart = isChannel ? 0 : pickFirst({
                     rendering::anim::USE_STANDING_START,
                     rendering::anim::EMOTE_USE_STANDING_NO_SHEATHE,
