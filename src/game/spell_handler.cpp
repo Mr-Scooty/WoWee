@@ -3417,8 +3417,8 @@ void SpellHandler::handleSpellLogExecute(network::Packet& packet) {
 
     const bool isPlayerCaster = (exeCaster == owner_.getPlayerGuid());
     for (uint32_t ei = 0; ei < exeEffectCount; ++ei) {
-        if (!packet.hasRemaining(5)) break;
-        uint8_t  effectType     = packet.readUInt8();
+        if (!packet.hasRemaining(8)) break;
+        uint32_t effectType     = packet.readUInt32();
         uint32_t effectLogCount = packet.readUInt32();
         effectLogCount = std::min(effectLogCount, 64u); // sanity
 
