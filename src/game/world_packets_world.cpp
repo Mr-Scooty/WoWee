@@ -715,6 +715,20 @@ bool QuestDetailsParser::parse(network::Packet& packet, QuestDetailsData& data) 
         return true;
     }
 
+    // AzerothCore WotLK 3.3.5a has portrait strings + portrait IDs here
+    if (!isPreWotlk()) {
+        packet.readString(); // portraitGiverText
+        packet.readString(); // portraitGiverName
+        packet.readString(); // portraitTurnInText
+        packet.readString(); // portraitTurnInName
+        if (packet.hasRemaining(8)) {
+            packet.readUInt32(); // portraitGiver
+            packet.readUInt32(); // portraitTurnIn
+        }
+    }
+
+    if (!packet.hasRemaining(10)) return true;
+
     /*activateAccept*/ packet.readUInt8();
     /*flags*/ packet.readUInt32();
     data.suggestedPlayers = packet.readUInt32();
@@ -958,11 +972,29 @@ bool QuestOfferRewardParser::parse(network::Packet& packet, QuestOfferRewardData
 
     const bool preferFixedRewardArrays = !isPreWotlk();
 
-    // After the two strings the packet contains a variable prefix (autoFinish + optional fields)
-    // before the emoteCount.  Different expansions and server emulator versions differ:
+    // AzerothCore/TrinityCore WotLK 3.3.5a inserts 4 portrait strings and
+    // 2 portrait uint32s between rewardText and the autoFinish field:
+    //   portraitGiverText(str) + portraitGiverName(str) +
+    //   portraitTurnInText(str) + portraitTurnInName(str) +
+    //   portraitGiver(4) + portraitTurnIn(4)
+    // These are variable-length (strings can be non-empty), so a fixed
+    // byte-skip heuristic can't reach them. Read them before scanning.
+    if (!isPreWotlk()) {
+        packet.readString(); // portraitGiverText
+        packet.readString(); // portraitGiverName
+        packet.readString(); // portraitTurnInText
+        packet.readString(); // portraitTurnInName
+        if (packet.hasRemaining(8)) {
+            packet.readUInt32(); // portraitGiver
+            packet.readUInt32(); // portraitTurnIn
+        }
+    }
+
+    // After portrait fields (WotLK) or directly after rewardText (Classic/TBC),
+    // a variable prefix precedes emoteCount:
     //   Classic 1.12   : uint8 autoFinish + uint32 suggestedPlayers  = 5 bytes
     //   TBC 2.4.3      : uint32 autoFinish + uint32 suggestedPlayers = 8 bytes (variable arrays)
-    //   WotLK 3.3.5a   : uint32 autoFinish + uint32 suggestedPlayers = 8 bytes (fixed 6/4 arrays)
+    //   WotLK 3.3.5a   : uint32 autoFinish + uint32 flags + uint32 suggestedPlayers = 12 bytes
     // Some vanilla-family servers omit autoFinish entirely (0 bytes of prefix).
     // We scan prefix sizes 0..16 bytes with both fixed and variable array layouts, scoring each.
 
@@ -1040,8 +1072,7 @@ bool QuestOfferRewardParser::parse(network::Packet& packet, QuestOfferRewardData
 
         out.ok = true;
         out.score = 0;
-        // WotLK OFFER_REWARD prefix: autoFinish(4) = 4 bytes
-        // WotLK QUEST_DETAILS prefix: autoFinish(4) + flags(4) + suggestedPlayers(4) = 12
+        // WotLK prefix (after portrait fields): autoFinish(4) + flags(4) + suggestedPlayers(4) = 12
         // TBC prefix: autoFinish(4) + suggestedPlayers(4) = 8 bytes
         // Classic prefix: autoFinish(1) + suggestedPlayers(4) = 5 bytes
         if (prefixSkip == 4 || prefixSkip == 8 || prefixSkip == 12) out.score += 3;
