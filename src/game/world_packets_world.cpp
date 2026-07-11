@@ -1040,27 +1040,28 @@ bool QuestOfferRewardParser::parse(network::Packet& packet, QuestOfferRewardData
 
         out.ok = true;
         out.score = 0;
-        // WotLK prefix: autoFinish(4) + flags(4) + suggestedPlayers(4) = 12 bytes
-        // (AzerothCore/TrinityCore include the flags field)
+        // WotLK OFFER_REWARD prefix: autoFinish(4) = 4 bytes
+        // WotLK QUEST_DETAILS prefix: autoFinish(4) + flags(4) + suggestedPlayers(4) = 12
         // TBC prefix: autoFinish(4) + suggestedPlayers(4) = 8 bytes
         // Classic prefix: autoFinish(1) + suggestedPlayers(4) = 5 bytes
-        if (prefixSkip == 8 || prefixSkip == 12) out.score += 3;
+        if (prefixSkip == 4 || prefixSkip == 8 || prefixSkip == 12) out.score += 3;
         else if (prefixSkip == 5) out.score += 1;
-        // WotLK/AzerothCore uses fixed 6 choice + 4 fixed reward arrays; older
-        // Classic/TBC-style packets use compact variable arrays.
         if (fixedArrays == preferFixedRewardArrays) out.score += 4;
-        // Valid counts
         if (choiceCount <= 6) out.score += 3;
         if (rewardCount <= 4) out.score += 3;
-        // All non-zero items are within declared counts
         if (nonZeroChoice <= choiceCount) out.score += 2;
         if (nonZeroFixed <= rewardCount) out.score += 2;
-        // Item plausibility: valid items have reasonable count and non-zero displayInfoId
         for (const auto& ri : out.choiceRewards) {
-            if (ri.count > 0 && ri.count < 1000 && ri.displayInfoId > 0) out.score += 1;
+            if (ri.itemId > 0 && ri.itemId < 100000 && ri.count > 0 && ri.count < 1000 && ri.displayInfoId > 0)
+                out.score += 2;
+            else if (ri.itemId >= 100000)
+                out.score -= 2;
         }
         for (const auto& ri : out.fixedRewards) {
-            if (ri.count > 0 && ri.count < 1000 && ri.displayInfoId > 0) out.score += 1;
+            if (ri.itemId > 0 && ri.itemId < 100000 && ri.count > 0 && ri.count < 1000 && ri.displayInfoId > 0)
+                out.score += 2;
+            else if (ri.itemId >= 100000)
+                out.score -= 2;
         }
         // No bytes left over (or only a few)
         size_t remaining = packet.getRemainingSize();
@@ -1097,10 +1098,20 @@ bool QuestOfferRewardParser::parse(network::Packet& packet, QuestOfferRewardData
         data.rewardXp      = best->rewardXp;
     }
 
-    LOG_DEBUG("Quest offer reward: id=", data.questId, " title='", data.title,
+    LOG_INFO("Quest offer reward: id=", data.questId, " title='", data.title,
              "' choices=", data.choiceRewards.size(), " fixed=", data.fixedRewards.size(),
+             " money=", data.rewardMoney, " xp=", data.rewardXp,
              " prefix=", (best ? best->prefixSkip : size_t(0)),
+             " score=", (best ? best->score : -1),
              (best && best->fixedArrays ? " fixed" : " var"));
+    for (const auto& ri : data.choiceRewards) {
+        LOG_INFO("  choice: itemId=", ri.itemId, " count=", ri.count,
+                 " displayId=", ri.displayInfoId, " slot=", ri.choiceSlot);
+    }
+    for (const auto& ri : data.fixedRewards) {
+        LOG_INFO("  fixed: itemId=", ri.itemId, " count=", ri.count,
+                 " displayId=", ri.displayInfoId);
+    }
     return true;
 }
 

@@ -2790,8 +2790,8 @@ public:
 /** SMSG_AUCTION_LIST_RESULT parser (shared for browse/owner/bidder) */
 class AuctionListResultParser {
 public:
-    // numEnchantSlots: Classic 1.12 = 1, TBC/WotLK = 3 (extra enchant slots per entry)
-    static bool parse(network::Packet& packet, AuctionListResult& data, int numEnchantSlots = 3);
+    // numEnchantSlots: Classic 1.12 = 1, TBC/WotLK = 6 (MAX_INSPECTED_ENCHANTMENT_SLOT)
+    static bool parse(network::Packet& packet, AuctionListResult& data, int numEnchantSlots = 6);
 };
 
 /** SMSG_AUCTION_COMMAND_RESULT parser */

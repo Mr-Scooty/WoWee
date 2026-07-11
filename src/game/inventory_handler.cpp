@@ -2145,7 +2145,8 @@ void InventoryHandler::handleAuctionHello(network::Packet& packet) {
 
 void InventoryHandler::handleAuctionListResult(network::Packet& packet) {
     AuctionListResult result;
-    if (!AuctionListResultParser::parse(packet, result)) return;
+    const int enchantSlots = isClassicLikeExpansion() ? 1 : 6;
+    if (!AuctionListResultParser::parse(packet, result, enchantSlots)) return;
 
     if (pendingAuctionTarget_ == AuctionResultTarget::OWNER) {
         auctionOwnerResults_ = std::move(result);
