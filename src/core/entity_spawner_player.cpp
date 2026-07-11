@@ -86,7 +86,16 @@ void EntitySpawner::spawnOnlinePlayer(uint64_t guid,
     auto itCache = playerModelCache_.find(cacheKey);
     if (itCache != playerModelCache_.end()) {
         modelId = itCache->second;
-    } else {
+        if (!charRenderer->getModelData(modelId)) {
+            LOG_WARNING("spawnOnlinePlayer: cached player model missing after world reload, reloading modelId=",
+                        modelId, " race=", static_cast<int>(raceId),
+                        " gender=", static_cast<int>(genderId));
+            playerTextureSlotsByModelId_.erase(modelId);
+            playerModelCache_.erase(itCache);
+            modelId = 0;
+        }
+    }
+    if (modelId == 0) {
         game::Race race = static_cast<game::Race>(raceId);
         game::Gender gender = (genderId == 1) ? game::Gender::FEMALE : game::Gender::MALE;
         std::string m2Path = game::getPlayerModelPath(race, gender);
@@ -979,6 +988,22 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
 
     auto goIt = gameObjectInstances_.find(guid);
     if (goIt != gameObjectInstances_.end()) {
+        if (gameHandler_ && gameHandler_->isTransportGuid(guid)) {
+            if (auto* transportManager = gameHandler_->getTransportManager()) {
+                if (transportManager->getTransport(guid)) {
+                    transportManager->rebindTransportInstance(
+                        guid, goIt->second.instanceId, !goIt->second.isWmo, displayId);
+                    transportManager->updateServerTransport(
+                        guid, glm::vec3(x, y, z), orientation);
+                } else {
+                    gameHandler_->notifyTransportSpawned(guid, entry, displayId, x, y, z, orientation);
+                }
+            } else {
+                gameHandler_->notifyTransportSpawned(guid, entry, displayId, x, y, z, orientation);
+            }
+            return;
+        }
+
         // Already have a render instance — update its position (e.g. transport re-creation)
         auto& info = goIt->second;
         glm::vec3 renderPos = core::coords::canonicalToRender(glm::vec3(x, y, z));
@@ -1029,7 +1054,7 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
             } else if (displayId == 3831) {
                 // Deeprun Tram car
                 modelPath = "World\\Generic\\Gnome\\Passive Doodads\\Subway\\SubwayCar.m2";
-                LOG_WARNING("Overriding transport displayId ", displayId, " → SubwayCar.m2");
+                LOG_INFO("Overriding transport displayId ", displayId, " → SubwayCar.m2");
             }
         }
 
@@ -1228,6 +1253,7 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
             }
 
             pipeline::M2Model model = pipeline::M2Loader::load(m2Data);
+            if (model.name.empty()) model.name = modelPath;
             if (model.vertices.empty()) {
                 LOG_WARNING("Failed to parse gameobject M2: ", modelPath);
                 gameObjectDisplayIdFailedCache_.insert(displayId);
@@ -1263,6 +1289,17 @@ void EntitySpawner::spawnOnlineGameObject(uint64_t guid, uint32_t entry, uint32_
         if (instanceId == 0) {
             LOG_WARNING("Failed to create gameobject instance for guid 0x", std::hex, guid, std::dec);
             return;
+        }
+
+        // Deeprun Tram cars: riding never used real mesh collision to begin with (Z is
+        // fully code-locked to the transport's simulated position while boarded, not
+        // derived from a floor query), so the solid SubwayCar.m2 body was only ever in
+        // the way - reported live as getting physically stuck walking back across a car
+        // after crossing it once. Skip collision so the model is purely visual/decorative
+        // for movement purposes, matching how the boarding logic already treats it (a
+        // proximity/footprint check, not a physical block).
+        if (displayId == 3831u) {
+            m2Renderer->setSkipCollision(instanceId, true);
         }
 
         // Freeze animation for static gameobjects, but let portals/effects/transports animate
