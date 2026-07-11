@@ -276,6 +276,17 @@ void WindowManager::renderGossipWindow(game::GameHandler& gameHandler,
             }
         }
 
+        // NPC body text (from NPC_TEXT referenced by titleTextId)
+        if (gossip.titleTextId > 0) {
+            const std::string& bodyText = gameHandler.getNpcText(gossip.titleTextId);
+            if (!bodyText.empty()) {
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
+                ImGui::TextWrapped("%s", bodyText.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::Separator();
+            }
+        }
+
         ImGui::Spacing();
 
         // Gossip option icons - matches WoW GossipOptionIcon enum
@@ -1459,7 +1470,9 @@ void WindowManager::renderTrainerWindow(game::GameHandler& gameHandler,
                         logCount++;
                     }
 
-                    if (isProfessionTrainer && alreadyKnown) {
+                    bool isCraftRecipe = isProfessionTrainer && alreadyKnown
+                                       && spell->profDialog != 0;
+                    if (isCraftRecipe) {
                         // Profession trainer: known recipes show "Create" button to craft
                         bool isCasting = gameHandler.isCasting();
                         if (isCasting) ImGui::BeginDisabled();

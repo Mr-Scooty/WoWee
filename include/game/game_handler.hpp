@@ -1509,6 +1509,7 @@ public:
     uint64_t getBagItemGuid(int bagIndex, int slotIndex) const;
     bool isGossipWindowOpen() const;
     const GossipMessageData& getCurrentGossip() const;
+    const std::string& getNpcText(uint32_t textId) const;
     bool isQuestDetailsOpen();
     const QuestDetailsData& getQuestDetails() const;
 

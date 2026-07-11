@@ -299,6 +299,9 @@ void QuestHandler::registerOpcodes(DispatchTable& table) {
     // ---- SMSG_GOSSIP_COMPLETE ----
     table[Opcode::SMSG_GOSSIP_COMPLETE] = [this](network::Packet& packet) { handleGossipComplete(packet); };
 
+    // ---- SMSG_NPC_TEXT_UPDATE ----
+    table[Opcode::SMSG_NPC_TEXT_UPDATE] = [this](network::Packet& packet) { handleNpcTextUpdate(packet); };
+
     // ---- SMSG_GOSSIP_POI ----
     table[Opcode::SMSG_GOSSIP_POI] = [this](network::Packet& packet) {
         if (!packet.hasRemaining(20)) return;
@@ -1556,6 +1559,17 @@ void QuestHandler::handleGossipMessage(network::Packet& packet) {
     // Classify gossip quests and update quest log + overhead NPC markers.
     classifyGossipQuests(true);
 
+    // Query NPC body text if not cached
+    if (currentGossip_.titleTextId > 0 && !npcTextCache_.count(currentGossip_.titleTextId)) {
+        uint32_t wireOp = wireOpcode(Opcode::CMSG_NPC_TEXT_QUERY);
+        if (wireOp != 0xFFFF && owner_.getSocket()) {
+            network::Packet qPkt(static_cast<uint16_t>(wireOp));
+            qPkt.writeUInt32(currentGossip_.titleTextId);
+            qPkt.writeUInt64(currentGossip_.npcGuid);
+            owner_.getSocket()->send(qPkt);
+        }
+    }
+
     // Play NPC greeting voice
     if (owner_.npcGreetingCallbackRef() && currentGossip_.npcGuid != 0) {
         auto entity = owner_.getEntityManager().getEntity(currentGossip_.npcGuid);
@@ -1677,6 +1691,35 @@ void QuestHandler::handleGossipComplete(network::Packet& packet) {
     gossipWindowOpen_ = false;
     if (owner_.addonEventCallbackRef()) owner_.addonEventCallbackRef()("GOSSIP_CLOSED", {});
     currentGossip_ = GossipMessageData{};
+}
+
+void QuestHandler::handleNpcTextUpdate(network::Packet& packet) {
+    if (!packet.hasRemaining(4)) return;
+    uint32_t textId = packet.readUInt32();
+    // 8 text entries: each has probability(4) + text0 + text1 + lang(4) + 6 emote fields(24)
+    for (int i = 0; i < 8; ++i) {
+        if (!packet.hasRemaining(4)) break;
+        /*float prob =*/ packet.readFloat();
+        if (!packet.hasData()) break;
+        std::string text0 = packet.readString();
+        if (!packet.hasData()) break;
+        std::string text1 = packet.readString();
+        if (!packet.hasRemaining(28)) break; // lang(4) + 6×emote(4) = 28
+        packet.setReadPos(packet.getReadPos() + 28);
+        if (!text0.empty() && !npcTextCache_.count(textId)) {
+            npcTextCache_[textId] = std::move(text0);
+        } else if (!text1.empty() && !npcTextCache_.count(textId)) {
+            npcTextCache_[textId] = std::move(text1);
+        }
+    }
+    LOG_DEBUG("NPC text update: id=", textId,
+             " cached=", npcTextCache_.count(textId) ? "yes" : "no");
+}
+
+const std::string& QuestHandler::getNpcText(uint32_t textId) const {
+    static const std::string empty;
+    auto it = npcTextCache_.find(textId);
+    return (it != npcTextCache_.end()) ? it->second : empty;
 }
 
 void QuestHandler::handleQuestPoiQueryResponse(network::Packet& packet) {
